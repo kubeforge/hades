@@ -5,3 +5,6 @@ resources:
 - group: hades
   version: v1alpha2
   kind: Config
+- group: hades
+  version: v1alpha2
+  kind: Project

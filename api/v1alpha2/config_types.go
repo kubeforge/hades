@@ -16,6 +16,7 @@ limitations under the License.
 package v1alpha2
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -31,10 +32,12 @@ type ConfigSpec struct {
 
 // ConfigStatus defines the observed state of Config
 type ConfigStatus struct {
+	Projects []corev1.ObjectReference `json:"projects,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=configs,scope=Cluster
+// +kubebuilder:subresource:status
 
 // Config is the Schema for the configs API
 type Config struct {

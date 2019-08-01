@@ -27,9 +27,64 @@ rules:
   - update
   - patch
 - apiGroups:
+  - hades.kubeforge.io
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - rbac.authorization.k8s.io
   resources:
   - clusterroles
+  verbs:
+  - get
+  - watch
+  - create
+  - update
+  - patch
+- apiGroups:
+  - hades.kubeforge.io
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - hades.kubeforge.io
+  resources:
+  - projects/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - hades.kubeforge.io
+  resources:
+  - configs
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
   verbs:
   - get
   - watch
