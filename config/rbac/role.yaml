@@ -1,0 +1,38 @@
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: manager-role
+rules:
+- apiGroups:
+  - hades.kubeforge.io
+  resources:
+  - configs
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - hades.kubeforge.io
+  resources:
+  - configs/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  verbs:
+  - get
+  - watch
+  - create
+  - update
+  - patch

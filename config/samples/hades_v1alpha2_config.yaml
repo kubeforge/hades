@@ -1,0 +1,7 @@
+apiVersion: hades.kubeforge.io/v1alpha2
+kind: Config
+metadata:
+  name: config-sample
+spec:
+  # Add fields here
+  foo: bar
