@@ -15,20 +15,14 @@ limitations under the License.
 
 package controllers
 
-// ensureLabel ensures that a label with the given key and value exist in the labels map.
-// Returns the (updated) labels map and a bool to indicate if the labels map was changed.
-func ensureLabel(labels map[string]string, key, value string) (map[string]string, bool) {
-	if labels == nil {
-		return map[string]string{
-			key: value,
-		}, true
-	}
-	if currentValue, ok := labels[key]; ok && currentValue == value {
-		return labels, false
-	}
-	labels[key] = value
-	return labels, true
-}
+import (
+	hadesv1alpha2 "github.com/kubeforge/hades/api/v1alpha2"
+)
+
+const (
+	configLabelKey  = "hades.kubeforge.io/config"
+	projectLabelKey = "hades.kubeforge.io/project"
+)
 
 // ensureLabels ensures that the keys and values given in ensureLabels are set in labels.
 // Returns the (updated) labels map and a bool to indictae if the labels map was changed.
@@ -44,4 +38,18 @@ func ensureLabels(labels map[string]string, ensureLabels map[string]string) (map
 		}
 	}
 	return labels, changed
+}
+
+// configSelectorLabels returns a set of labels that select the given config
+func configSelectorLabels(config hadesv1alpha2.Config) map[string]string {
+	return map[string]string{
+		configLabelKey: config.Name,
+	}
+}
+
+func projectSelectorLabels(project hadesv1alpha2.Project) map[string]string {
+	return map[string]string{
+		configLabelKey:  project.Spec.ConfigName,
+		projectLabelKey: project.Name,
+	}
 }

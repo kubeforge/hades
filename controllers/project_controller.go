@@ -33,10 +33,6 @@ import (
 	hadesv1alpha2 "github.com/kubeforge/hades/api/v1alpha2"
 )
 
-const (
-	projectLabelKey = "hades.kubeforge.io/project"
-)
-
 // ProjectReconciler reconciles a Project object
 type ProjectReconciler struct {
 	client.Client
@@ -117,6 +113,8 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
+	projectLabels := projectSelectorLabels(project)
+
 	var namespace corev1.Namespace
 	if err := r.Get(ctx, client.ObjectKey{Name: project.Name}, &namespace); err != nil {
 		nLog := log.WithValues("namespace", project.Name)
@@ -127,7 +125,8 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 		namespace = corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: project.Name,
+				Name:   project.Name,
+				Labels: projectLabels,
 			},
 		}
 		if err := ctrl.SetControllerReference(&project, &namespace, r.Scheme); err != nil {
@@ -145,10 +144,6 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	var role rbacv1.Role
 	rKey := client.ObjectKey{Name: project.Name, Namespace: namespace.Name}
 	rLog := log.WithValues("role", rKey)
-	rLabels := map[string]string{
-		projectLabelKey: project.Name,
-		configLabelKey:  config.Name,
-	}
 	if err := r.Get(ctx, rKey, &role); err != nil {
 		if !apierrors.IsNotFound(err) {
 			rLog.Error(err, "Unable to fetch role")
@@ -159,7 +154,7 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      project.Name,
 				Namespace: namespace.Name,
-				Labels:    rLabels,
+				Labels:    projectLabels,
 			},
 			Rules: config.Spec.Rules,
 		}
@@ -176,7 +171,7 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	} else {
 		// Reconcile role
 		roleLabels := role.GetLabels()
-		roleLabels, updateNeeded := ensureLabels(roleLabels, rLabels)
+		roleLabels, updateNeeded := ensureLabels(roleLabels, projectLabels)
 		if !reflect.DeepEqual(config.Spec.Rules, role.Rules) {
 			updateNeeded = true
 		}

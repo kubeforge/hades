@@ -34,7 +34,6 @@ import (
 
 const (
 	projectOwnerKey = ".spec.configName"
-	configLabelKey  = "hades.kubeforge.io/config"
 )
 
 // ConfigReconciler reconciles a Config object
@@ -64,6 +63,8 @@ func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	}
 
+	configLabels := configSelectorLabels(config)
+
 	var clusterRole rbacv1.ClusterRole
 	crLog := log.WithValues("clusterrole", config.Name)
 	if err := r.Get(ctx, client.ObjectKey{Name: config.Name}, &clusterRole); err != nil {
@@ -74,10 +75,8 @@ func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 		clusterRole = rbacv1.ClusterRole{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: config.Name,
-				Labels: map[string]string{
-					configLabelKey: config.Name,
-				},
+				Name:   config.Name,
+				Labels: configLabels,
 			},
 			Rules: config.Spec.ClusterRules,
 		}
@@ -93,7 +92,7 @@ func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	} else {
 		// Reconcile clusterrole
-		clusterRoleLabels, updateNeeded := ensureLabel(clusterRole.GetLabels(), configLabelKey, config.Name)
+		clusterRoleLabels, updateNeeded := ensureLabels(clusterRole.GetLabels(), configLabels)
 		if !reflect.DeepEqual(config.Spec.ClusterRules, clusterRole.Rules) {
 			updateNeeded = true
 		}
@@ -135,11 +134,8 @@ func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	// Reconcile roles
-	roleLabels := map[string]string{
-		configLabelKey: config.Name,
-	}
 	var roleList rbacv1.RoleList
-	if err := r.List(ctx, &roleList, client.MatchingLabels(roleLabels)); err != nil {
+	if err := r.List(ctx, &roleList, client.MatchingLabels(configLabels)); err != nil {
 		log.Error(err, "Unable to list roles")
 		return ctrl.Result{}, err
 	}
