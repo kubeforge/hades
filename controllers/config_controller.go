@@ -43,10 +43,12 @@ type ConfigReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=hades.kubeforge.io,resources=configs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=hades.kubeforge.io,resources=configs,verbs=get;watch;create;delete
 // +kubebuilder:rbac:groups=hades.kubeforge.io,resources=configs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hades.kubeforge.io,resources=projects,verbs=get;list;watch
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;watch;create;update;patch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=list;update
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;watch;create;update;patch;delete
 
 // Reconcile reconciles the given request
 func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
@@ -99,9 +101,9 @@ func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		if updateNeeded {
 			clusterRole.SetLabels(clusterRoleLabels)
 			clusterRole.Rules = config.Spec.ClusterRules
-			crLog.V(1).Info("Update clusterrole rules")
+			crLog.V(1).Info("Update clusterrole")
 			if err := r.Update(ctx, &clusterRole); err != nil {
-				crLog.Error(err, "Unable to update clusterrole rules")
+				crLog.Error(err, "Unable to update clusterrole")
 				return ctrl.Result{}, err
 			}
 		}
@@ -114,8 +116,14 @@ func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 	projectRefs := make([]corev1.ObjectReference, 0, len(projectList.Items))
-	for _, project := range projectList.Items {
+	projectSubjects := make([]rbacv1.Subject, len(projectList.Items)) // Subjects are needed for clusterrolebinding reconciliation
+	for i, project := range projectList.Items {
 		pLog := log.WithValues("project", project.Name)
+		projectSubjects[i] = rbacv1.Subject{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      project.Name,
+			Namespace: project.Name,
+		}
 		projectRef, err := ref.GetReference(r.Scheme, &project)
 		if err != nil {
 			pLog.Error(err, "Unable to make reference to project")
@@ -151,6 +159,61 @@ func (r *ConfigReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	}
 
+	// Reconcile clusterrolebindings
+	roleRef := rbacv1.RoleRef{
+		APIGroup: clusterRole.GroupVersionKind().Group,
+		Kind:     "ClusterRole",
+		Name:     clusterRole.Name,
+	}
+
+	var clusterRoleBinding rbacv1.ClusterRoleBinding
+	crbLog := log.WithValues("clusterrolebinding", config.Name)
+	if err := r.Get(ctx, client.ObjectKey{Name: config.Name}, &clusterRoleBinding); err != nil {
+		if !apierrors.IsNotFound(err) {
+			crbLog.Error(err, "Unable to fetch clusterrolebinding")
+			return ctrl.Result{}, err
+		}
+
+		clusterRoleBinding = rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   config.Name,
+				Labels: configLabels,
+			},
+			RoleRef:  roleRef,
+			Subjects: projectSubjects,
+		}
+		if err := ctrl.SetControllerReference(&config, &clusterRoleBinding, r.Scheme); err != nil {
+			crbLog.Error(err, "Unable to set clusterrolebinding owner")
+			return ctrl.Result{}, err
+		}
+
+		crbLog.V(1).Info("Create clusterrolebinding")
+		if err := r.Create(ctx, &clusterRoleBinding); err != nil {
+			crbLog.Error(err, "Unable to create clusterrolebinding")
+			return ctrl.Result{}, err
+		}
+	} else {
+		// Reconcile clusterrolebinding
+		clusterRoleBindingLabels := clusterRoleBinding.GetLabels()
+		clusterRoleBindingLabels, updateNeeded := ensureLabels(clusterRoleBindingLabels, configLabels)
+		if !reflect.DeepEqual(roleRef, clusterRoleBinding.RoleRef) {
+			updateNeeded = true
+		}
+		if !reflect.DeepEqual(projectSubjects, clusterRoleBinding.Subjects) {
+			updateNeeded = true
+		}
+		if updateNeeded {
+			clusterRoleBinding.SetLabels(clusterRoleBindingLabels)
+			clusterRoleBinding.RoleRef = roleRef
+			clusterRoleBinding.Subjects = projectSubjects
+			crbLog.V(1).Info("Update clusterrolebinding")
+			if err := r.Update(ctx, &clusterRoleBinding); err != nil {
+				crbLog.Error(err, "Unable to update clusterrolebinding")
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -172,6 +235,7 @@ func (r *ConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hadesv1alpha2.Config{}).
 		Owns(&rbacv1.ClusterRole{}).
+		Owns(&rbacv1.ClusterRoleBinding{}).
 		Owns(&hadesv1alpha2.Project{}).
 		Complete(r)
 }

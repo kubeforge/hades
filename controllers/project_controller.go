@@ -40,11 +40,13 @@ type ProjectReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=hades.kubeforge.io,resources=projects,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=hades.kubeforge.io,resources=projects,verbs=get;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hades.kubeforge.io,resources=projects/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hades.kubeforge.io,resources=configs,verbs=get
-// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;watch;create;update;patch
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;watch;create;update;patch;delete
 
 // Reconcile reconciles the given request
 func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
@@ -104,7 +106,6 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			log.Error(err, "Unable to update project owners")
 			return ctrl.Result{}, r.failWithConfigError(ctx, err, &project, "InvalidProjectOwner", "Unable to update project owners")
 		}
-		return ctrl.Result{}, nil
 	}
 	setProjectCondition(&project, hadesv1alpha2.ProjectConditionConfigured, corev1.ConditionTrue, "ConfigFound", "Config controls this project")
 	log.V(1).Info("Update project status")
@@ -116,10 +117,10 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	projectLabels := projectSelectorLabels(project)
 
 	var namespace corev1.Namespace
+	nsLog := log.WithValues("namespace", project.Name)
 	if err := r.Get(ctx, client.ObjectKey{Name: project.Name}, &namespace); err != nil {
-		nLog := log.WithValues("namespace", project.Name)
 		if !apierrors.IsNotFound(err) {
-			nLog.Error(err, "Unable to fetch namespace")
+			nsLog.Error(err, "Unable to fetch namespace")
 			return ctrl.Result{}, err
 		}
 
@@ -130,14 +131,66 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			},
 		}
 		if err := ctrl.SetControllerReference(&project, &namespace, r.Scheme); err != nil {
-			nLog.Error(err, "Unable to set namespace owner")
+			nsLog.Error(err, "Unable to set namespace owner")
 			return ctrl.Result{}, err
 		}
 
-		nLog.V(1).Info("Create namespace")
+		nsLog.V(1).Info("Create namespace")
 		if err := r.Create(ctx, &namespace); err != nil {
-			nLog.Error(err, "Unable to create namespace")
+			nsLog.Error(err, "Unable to create namespace")
 			return ctrl.Result{}, err
+		}
+	} else {
+		// Reconcile namespace
+		namespaceLabels := namespace.GetLabels()
+		namespaceLabels, updateNeeded := ensureLabels(namespaceLabels, projectLabels)
+		if updateNeeded {
+			namespace.SetLabels(namespaceLabels)
+			nsLog.V(1).Info("Update namespace")
+			if err := r.Update(ctx, &namespace); err != nil {
+				nsLog.Error(err, "Unable to update namespace")
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	var serviceAccount corev1.ServiceAccount
+	saKey := client.ObjectKey{Name: project.Name, Namespace: namespace.Name}
+	saLog := log.WithValues("serviceaccount", saKey)
+	if err := r.Get(ctx, saKey, &serviceAccount); err != nil {
+		if !apierrors.IsNotFound(err) {
+			saLog.Error(err, "Unable to fetch serviceaccount")
+			return ctrl.Result{}, err
+		}
+
+		serviceAccount = corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      project.Name,
+				Namespace: namespace.Name,
+				Labels:    projectLabels,
+			},
+		}
+		if err := ctrl.SetControllerReference(&project, &serviceAccount, r.Scheme); err != nil {
+			saLog.Error(err, "Unable to set serviceaccount owner")
+			return ctrl.Result{}, err
+		}
+
+		saLog.V(1).Info("Create serviceaccount")
+		if err := r.Create(ctx, &serviceAccount); err != nil {
+			saLog.Error(err, "Unable to create serviceaccount")
+			return ctrl.Result{}, err
+		}
+	} else {
+		// Reconcile serviceaccount
+		serviceAccountLabels := serviceAccount.GetLabels()
+		serviceAccountLabels, updateNeeded := ensureLabels(serviceAccountLabels, projectLabels)
+		if updateNeeded {
+			serviceAccount.SetLabels(serviceAccountLabels)
+			saLog.V(1).Info("Update serviceaccount")
+			if err := r.Update(ctx, &serviceAccount); err != nil {
+				saLog.Error(err, "Unable to update serviceaccount")
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -178,12 +231,74 @@ func (r *ProjectReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		if updateNeeded {
 			role.SetLabels(roleLabels)
 			role.Rules = config.Spec.Rules
-			rLog.V(1).Info("Update role rules")
+			rLog.V(1).Info("Update role")
 			if err := r.Update(ctx, &role); err != nil {
 				rLog.Error(err, "Unable to update role")
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, nil
+		}
+	}
+
+	roleRef := rbacv1.RoleRef{
+		APIGroup: role.GroupVersionKind().Group,
+		Kind:     "Role",
+		Name:     role.Name,
+	}
+	subjects := []rbacv1.Subject{
+		rbacv1.Subject{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      serviceAccount.Name,
+			Namespace: serviceAccount.Namespace,
+		},
+	}
+
+	var roleBinding rbacv1.RoleBinding
+	rbKey := client.ObjectKey{Name: project.Name, Namespace: namespace.Name}
+	rbLog := log.WithValues("rolebinding", rbKey)
+	if err := r.Get(ctx, rbKey, &roleBinding); err != nil {
+		if !apierrors.IsNotFound(err) {
+			rbLog.Error(err, "Unable to fetch rolebinding")
+			return ctrl.Result{}, err
+		}
+
+		roleBinding = rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      project.Name,
+				Namespace: namespace.Name,
+				Labels:    projectLabels,
+			},
+			RoleRef:  roleRef,
+			Subjects: subjects,
+		}
+		if err := ctrl.SetControllerReference(&project, &roleBinding, r.Scheme); err != nil {
+			rbLog.Error(err, "Unable to set rolebinding owner")
+			return ctrl.Result{}, err
+		}
+
+		rbLog.V(1).Info("Create rolebinding")
+		if err := r.Create(ctx, &roleBinding); err != nil {
+			rbLog.Error(err, "Unable to create rolebinding")
+			return ctrl.Result{}, err
+		}
+	} else {
+		// Reconcile rolebinding
+		roleBindingLabels := roleBinding.GetLabels()
+		roleBindingLabels, updateNeeded := ensureLabels(roleBindingLabels, projectLabels)
+		if !reflect.DeepEqual(roleRef, roleBinding.RoleRef) {
+			updateNeeded = true
+		}
+		if !reflect.DeepEqual(subjects, roleBinding.Subjects) {
+			updateNeeded = true
+		}
+		if updateNeeded {
+			roleBinding.SetLabels(roleBindingLabels)
+			roleBinding.RoleRef = roleRef
+			roleBinding.Subjects = subjects
+			rbLog.V(1).Info("Update rolebinding")
+			if err := r.Update(ctx, &roleBinding); err != nil {
+				rbLog.Error(err, "Unable to update rolebinding")
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -195,7 +310,9 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hadesv1alpha2.Project{}).
 		Owns(&corev1.Namespace{}).
+		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Complete(r)
 }
 
